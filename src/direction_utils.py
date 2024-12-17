@@ -10,6 +10,15 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
+import random
+import constants
+
+
+SEED=constants.seed
+torch.manual_seed(SEED)
+torch.cuda.manual_seed(SEED) 
+np.random.seed(SEED)
+random.seed(SEED)
 
  # Euclidean Alignment (EA)
 def euclidean_alignment_raw(Xtarget, Xsource):
@@ -135,10 +144,12 @@ def baseline_correction(X, baseline_samples=500):
     return Xnew
 
 # Preprocessing: Surface Laplacian, Bandpass Filter
-def bandpass_filtering(X, fs=500, fcut=[0.5, 45], filt_order=5):
+def bandpass_filtering(X, fs=500, fcut=[0.1, 90], filt_order=5):
     n_trials, n_samples, n_channels = X.shape
     X1 = np.zeros_like(X)
-    b_notch, a_notch = signal.iirnotch(50, 30, fs)
+    notch_freq = 50
+    q_factor = 20
+    b_notch, a_notch = signal.iirnotch(notch_freq, q_factor, fs)
     b,a = signal.butter(filt_order, fcut, fs=fs, btype = 'band', output='ba') 
 
     for t in range(n_trials):
@@ -202,5 +213,85 @@ def online_sess_dataset(subnum, base_path=None):
     return np.array(Xtr), np.array(Ytr), np.array(Xte), np.array(Yte) 
 
 
+def data_augmentation_timeshift(real_data, real_label, shift_range=(0.1, 0.5)):
+    """
+    Apply time shifting to EEG data using np.roll.
+    Args:
+        data: EEG data, shape (Nt, Nc, Ns).
+        shift_range: Tuple (min_shift, max_shift) in seconds.
+    Returns:
+        Augmented data with time-shifting applied.
+    """
+    Nt, Nc, Ns = real_data.shape
+    num_augmented_trials = 3*Nt
+    fs = constants.fs
+    augmented_data = []
+    augmented_label = []
+    for _ in range(num_augmented_trials):
+        # Choose a random trial to augment 
+        trial_idx = np.random.randint(0, Nt)
+
+        # Random shift witinh the specified range
+        shift_seconds = np.random.uniform(*shift_range)
+        shift_samples = int(shift_seconds*fs)
+
+        #Applt time shift to all the channels of the selected trial
+        shifted_trial = np.array([np.roll(channel, shift_samples) for channel in real_data[trial_idx]])
+
+        # Append time shift to all channels of the selected trial 
+        augmented_data.append(shifted_trial)
+        augmented_label.append(real_label[trial_idx])
+    
+    augmented_data = np.array(augmented_data)
+    augmented_label = np.array(augmented_label)
+
+    # Combine original and augmented data
+    combined_data = np.concatenate((real_data, augmented_data), axis=0)
+    combined_label = np.concatenate((real_label, augmented_label), axis=0)
+
+    return combined_data, combined_label
+
+
+def speed_dataset(train_subnum, test_subnum, base_path=None):
+
+    Xtr = []
+    Ytr = []
+    for sub in train_subnum:
+        rel_path = f'data/S{sub:02d}_midata.mat'
+        filepath = os.path.join(base_path, rel_path)
+        
+        mat_data = scipy.io.loadmat(filepath)
+        Xtr.append(mat_data['Xtrain'])
+        Ytr.append(mat_data['Ytrain'])
+    Xtr = np.concatenate(Xtr, axis=0)
+    Ytr = np.concatenate(Ytr, axis=0)
+    
+    # print(type(test_subnum), test_subnum, test_subnum[0])
+    if len(test_subnum)==1:
+        rel_path = f'data/S{test_subnum[0]:02d}_midata.mat'
+        filepath = os.path.join(base_path, rel_path)
+        
+        mat_data = scipy.io.loadmat(filepath)
+
+        Xte = mat_data['Xtrain']
+        Yte = mat_data['Ytrain']
+    else:
+        print(f'There are more than 1 test subjects')
+
+    return np.array(Xtr), np.array(Ytr), np.array(Xte), np.array(Yte)
+
+
+if __name__=='__main__':
+    # Generate random EEG data for demonstration (replace with your data)
+    
+    Nt, Nc, Ns = 60, 33, 2000  # Original EEG data dimensions
+    eeg_data = np.random.rand(Nt, Nc, Ns)  # Shape: (60, 33, 2000)
+    X = data_augmentation_timeshift(eeg_data, shift_range=(0.1, 0.5), num_augmented_trials=150)
+    # Final shape of augmented data
+    print(f"Original data shape: {eeg_data.shape}")
+    print(f"Augmented data shape: {X.shape}")
+
+
+    
 
 

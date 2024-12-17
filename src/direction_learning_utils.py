@@ -2,7 +2,8 @@ import numpy as np
 import pandas as pd
 import os
 
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, KFold
+from sklearn.model_selection import LeaveOneOut
 
 import torch
 import torch.nn as nn
@@ -11,6 +12,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 import direction_utils as utils
 import constants
+import random
 
 learning_rate=constants.learning_rate   #1e-4
 num_epochs = constants.num_epochs   #1000
@@ -18,9 +20,12 @@ patience = constants.patience   #30  # Number of epochs to wait before stopping 
 min_delta = constants.min_delta   #1e-3 # Minimum change to qualify as improvement
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-torch.manual_seed(0)
-torch.cuda.manual_seed(0) 
-np.random.seed(0)
+
+SEED=constants.seed
+torch.manual_seed(SEED)
+torch.cuda.manual_seed(SEED) 
+np.random.seed(SEED)
+random.seed(SEED)
 
 
 def model_evaluation(model, val_loader):
@@ -72,6 +77,14 @@ def model_training(model, train_loader, val_loader, Tuning=False, verbose=False)
     train_losses = []
     val_losses = []
     val_accuracy = []
+    mdl_filename = os.path.join(constants.mdl_dir, 'trained_model_checkpoint.pth')
+
+    if not Tuning and os.path.exists(mdl_filename):
+        os.remove(mdl_filename)
+        # print('deleted existing model')
+    # else:
+        # print('No saved model')
+
 
     for epoch in range(num_epochs):
         model.train()
@@ -105,7 +118,7 @@ def model_training(model, train_loader, val_loader, Tuning=False, verbose=False)
             if val_acc > best_val_acc + min_delta:  # Check if validation Acc improved
                 best_val_acc = val_acc
                 early_stop_counter = 0  # Reset early stop counter
-                torch.save(model.state_dict(), 'trained_model_checkpoint.pth')  # Save best model
+                torch.save(model.state_dict(), mdl_filename)  # Save best model
                 if verbose:
                     print(f'New best validation accuracy: {best_val_acc:.4f} at epoch {epoch + 1}')
 
@@ -118,23 +131,26 @@ def model_training(model, train_loader, val_loader, Tuning=False, verbose=False)
                 break
 
         else:
-            if epoch > 100:
+            if epoch > constants.min_epochs:
                 # Early stopping check
                 if val_acc > best_val_acc + min_delta:  # Check if validation Acc improved
                     best_val_acc = val_acc
                     early_stop_counter = 0  # Reset early stop counter
-                    torch.save(model.state_dict(), 'trained_model_checkpoint.pth')  # Save best model
+                    # torch.save(model.state_dict(), 'trained_model_checkpoint.pth')  # Save best model4
+                    torch.save(model.state_dict(), mdl_filename)
                     if verbose:
                         print(f'New best validation accuracy: {best_val_acc:.4f} at epoch {epoch + 1}')
 
                 else:
                     early_stop_counter += 1
 
-                if early_stop_counter >= patience and best_val_acc > 70.00:
+                if early_stop_counter >= patience and best_val_acc > constants.best_val_acc:
                     if verbose:
                         print(f'Early stopping at epoch {epoch + 1} with best validation accuracy: {best_val_acc:.4f}')
                     break
     
+    model.load_state_dict(torch.load(os.path.join(constants.mdl_dir, 'trained_model_checkpoint.pth')))
+
     return model
  
 # Function to calculate accuracy
@@ -144,16 +160,19 @@ def calculate_accuracy(preds, labels):
     accuracy = correct / labels.size(0)
     return accuracy*100
 
-def convert_to_tensor(X, Y, batch_size=32, shuffle=False):
+def convert_to_tensor(X, Y, batch_size=32, train_flag=False):
     
     Xbase = utils.baseline_correction(X)
     Xfilt = utils.bandpass_filtering(Xbase)
+
+    if train_flag:
+        Xfilt, Y = utils.data_augmentation_timeshift(Xfilt, Y)
 
     X_tensor = torch.tensor(Xfilt, dtype=torch.float32).unsqueeze(1).permute(0, 1, 3, 2).to(device)  # Shape: (batch_size, 1, 27, 2500)
     Y_tensor = torch.tensor(Y, dtype=torch.long).to(device)  # Use long for classification
 
     torch_data = TensorDataset(X_tensor, Y_tensor)
-    data_loader = DataLoader(dataset=torch_data, batch_size=batch_size, shuffle=shuffle)
+    data_loader = DataLoader(dataset=torch_data, batch_size=batch_size, shuffle=train_flag)
 
 
     return data_loader
@@ -244,10 +263,10 @@ class EEGScaler(nn.Module):
             raise ValueError('dropoutType must be one of SpatialDropout2D or Dropout.')
         
         #ElectrodeScaler
-        self.electrode_scale = ElectrodeScaler(Chan, Samples, reduction=3)
+        self.electrode_scale = ElectrodeScaler(Chan, Samples, reduction=constants.el_scaler_red_rate)
     
         #TemporalScaler
-        self.sample_scale = TemporalScaler(Chan, Samples, reduction=16)
+        self.sample_scale = TemporalScaler(Chan, Samples, reduction=constants.sample_scaler_red_rate)
 
         #Depthwise CNN
         self.conv1 = nn.Conv2d(1, F1, (1, kernLength), padding='same', bias=False)
@@ -295,7 +314,6 @@ class EEGScaler(nn.Module):
         x = self.separableConv(x)
         x = self.batchnorm3(x)
         x = F.elu(x)
-        # x = x*sample_scales.expand_as(x)
 
         x = self.pool2(x)
         x = self.dropout(x)
@@ -306,16 +324,94 @@ class EEGScaler(nn.Module):
         return F.softmax(x, dim=1)
 
 
+def augmented_dataset_preparation():
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # data_dir = os.path.join(os.getcwd(), 'SIT2024', 'MI_TimeAttention')
+    train_ratio = constants.train_ratio
+
+    subids = list(range(1, 15))
+    loo = LeaveOneOut()
+
+    for train_subs, test_subs in loo.split(subids):
+        train_subids = [subids[i] for i in train_subs]
+        test_subids = [subids[i] for i in test_subs] 
+
+        filepath = os.path.join(constants.data_dir, 'data', f'augmented_data_testsub_S{test_subids[0]:02d}.pt')
+        print(filepath)
+
+        train_data, train_label, test_data, test_label = utils.speed_dataset(train_subids, test_subids, base_path=constants.data_dir)
+        eeg_train, eeg_val, label_train, label_val = train_test_split(train_data, train_label, 
+                                                                train_size=train_ratio, random_state=42, shuffle=True)
+        
+        train_loader = convert_to_tensor(eeg_train, label_train, train_flag=True)
+        val_loader = convert_to_tensor(eeg_val, label_val, train_flag=False)
+
+        torch_train_dataset = train_loader.dataset
+        Xtr, Ytr = torch_train_dataset.tensors
+
+        torch_val_dataset = val_loader.dataset
+        Xval, Yval = torch_val_dataset.tensors
+        torch.save({
+            'Xtr': Xtr.cpu(),
+            'Ytr': Ytr.cpu(),
+            'Xval': Xval.cpu(),
+            'Yval': Yval.cpu()}, 
+            filepath)
+        
+        # Fine tuned the scaling layers only to report the performance. 
+        kf = KFold(n_splits=5, shuffle=True, random_state=42)
+        fold=1
+
+        for train_idx, test_idx in kf.split(test_data):
+            # Split into training and test sets
+            Xtr, Xte = test_data[train_idx], test_data[test_idx]
+            Ytr, Yte = test_label[train_idx], test_label[test_idx]
+
+            Xtrain, Xval, Ytrain, Yval = train_test_split(Xtr, Ytr, train_size=train_ratio, random_state=42, shuffle=True)
+            
+            train_loader = convert_to_tensor(Xtrain, Ytrain, batch_size=constants.batch_size, train_flag=True)
+            val_loader = convert_to_tensor(Xval, Yval, batch_size=constants.batch_size, train_flag=False)
+            test_loader = convert_to_tensor(Xte, Yte, batch_size=Yte.size, train_flag=False)
+
+            torch_train_dataset = train_loader.dataset
+            Xtr, Ytr = torch_train_dataset.tensors
+
+            torch_val_dataset = val_loader.dataset
+            Xval, Yval = torch_val_dataset.tensors
+
+            torch_test_dataset = test_loader.dataset
+            Xte, Yte = torch_test_dataset.tensors
+
+            filepath = os.path.join(constants.data_dir, 'data',  f'augmented_data_fold{fold}_S{test_subids[0]:02d}.pt')
+            print(f'  ...{filepath}')
+
+            torch.save({
+                'Xtr': Xtr.cpu(),
+                'Ytr': Ytr.cpu(),
+                'Xval': Xval.cpu(),
+                'Yval': Yval.cpu(), 
+                'Xte' : Xte.cpu(), 
+                'Yte':Yte.cpu()}, 
+                filepath)
+            
+            fold += 1
+    return 
+
+
+
+
 if __name__=='__main__':
     # Example Usage
     # batch, filters, height, width = 32, 1, 27, 2000
     # x = torch.randn(batch, filters, height, width)
 
-    electrodes, samples = 27, 2000
-    x = torch.randn(electrodes, samples)
+    # electrodes, samples = 27, 2000
+    # x = torch.randn(electrodes, samples)
 
-    model = EEGScaler(nb_classes=2, Chan=27, Samples=2000)
+    # model = EEGScaler(nb_classes=2, Chan=27, Samples=2000)
 
-    # model = TemporalScaler(height=height, width=width)
-    scaled_x = model(x)
-    print("Output shape:", scaled_x.shape)  # Expected: (32, 1, 27, 2000)
+    # # model = TemporalScaler(height=height, width=width)
+    # scaled_x = model(x)
+    # print("Output shape:", scaled_x.shape)  # Expected: (32, 1, 27, 2000)
+
+    augmented_dataset_preparation()

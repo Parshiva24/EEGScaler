@@ -26,6 +26,9 @@ __pycache__/
 # Models
 *.pth
 *.h5
+*.pkl 
+*.pt 
+
  
 # Distribution / packaging
 .Python
