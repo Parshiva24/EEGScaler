@@ -337,7 +337,7 @@ def subjectwise_finetuned_speed_decoding_v2(electrode_scaling=True, sample_scale
 
         train_subids = [subids[i] for i in train_subs]
         test_subids = [subids[i] for i in test_subs] 
-        # if test_subids[0]!=10:
+        # if test_subids[0]!=1:
         #     print(f'Test Subject: {test_subids[0]}')
         #     continue
 
@@ -352,7 +352,8 @@ def subjectwise_finetuned_speed_decoding_v2(electrode_scaling=True, sample_scale
 
         train_loader = DataLoader(dataset=TensorDataset(train_X_tensor, train_Y_tensor),
                                   batch_size=constants.batch_size,
-                                  shuffle=True)
+                                  shuffle=True, worker_init_fn=lambda _: np.random.seed(constants.seed))
+        
         val_loader = DataLoader(dataset=TensorDataset(val_X_tensor, val_Y_tensor),
                             batch_size=constants.batch_size,
                             shuffle=False)
@@ -378,10 +379,12 @@ def subjectwise_finetuned_speed_decoding_v2(electrode_scaling=True, sample_scale
 
             train_loader = DataLoader(dataset=TensorDataset(train_X_tensor, train_Y_tensor),
                                     batch_size=constants.batch_size,
-                                    shuffle=True)
+                                    shuffle=True, worker_init_fn=lambda _: np.random.seed(constants.seed))
+            
             val_loader = DataLoader(dataset=TensorDataset(val_X_tensor, val_Y_tensor),
                                 batch_size=constants.batch_size,
                                 shuffle=False)
+            
             test_loader = DataLoader(dataset=TensorDataset(test_X_tensor, test_Y_tensor),
                                      batch_size=constants.batch_size,
                                      shuffle=False)
@@ -403,7 +406,7 @@ def subjectwise_finetuned_speed_decoding_v2(electrode_scaling=True, sample_scale
         print(f"Subject {test_subs[0]}: Average 5-Fold Accuracy = {avg_accuracy:.4f}")
     
     print(f'Average Accuracy: {np.mean(list(subwise_acc.values()))}')
-    return 
+    return subwise_acc
 
 
 if __name__=='__main__':
@@ -417,6 +420,25 @@ if __name__=='__main__':
     # speed_acc = mi_speed_decoding(verbose=True)
     # subject_specific_speed_decoding(verbose=False)
 
+    acc_comparison = dict()
+    acc_comparison['subIDs'] = ['S01','S02','S03','S04','S05','S06','S07','S08','S09','S10','S11','S12','S13','S14' ]
+
 
     # subjectwise_finetuned_speed_decoding(electrode_scaling=True, sample_scale=True, dense=True, verbose=False)
-    subjectwise_finetuned_speed_decoding_v2(electrode_scaling=False, sample_scale=True, dense=True, verbose=False)
+    electrode_scale_acc = subjectwise_finetuned_speed_decoding_v2(electrode_scaling=True, sample_scale=False, dense=True, verbose=False)
+    acc_comparison['Electrode Scaling'] = list(electrode_scale_acc.values())
+    print('Electrode Scaling Method: ')
+    print(f'Average Accuracy: {np.mean(list(electrode_scale_acc.values()))}')
+
+    sample_scale_acc = subjectwise_finetuned_speed_decoding_v2(electrode_scaling=False, sample_scale=True, dense=True, verbose=False)
+    acc_comparison['Sample Scaling'] = list(sample_scale_acc.values())
+    print('Sample Scaling Method: ')
+    print(f'Average Accuracy: {np.mean(list(sample_scale_acc.values()))}')
+
+    proposed_mtd_acc = subjectwise_finetuned_speed_decoding_v2(electrode_scaling=True, sample_scale=True, dense=True, verbose=False)
+    acc_comparison['Both Scaling'] = list(proposed_mtd_acc.values())
+    print('Proposed EEGScaler Method: ')
+    print(f'Average Accuracy: {np.mean(list(proposed_mtd_acc.values()))}')
+
+    df = pd.DataFrame(acc_comparison)
+    df.to_csv('EEGScaler_Acc_Comparison_100epochs.csv', index=False)

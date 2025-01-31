@@ -23,10 +23,12 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 SEED=constants.seed
 torch.manual_seed(SEED)
-torch.cuda.manual_seed(SEED) 
+torch.cuda.manual_seed_all(SEED) 
 np.random.seed(SEED)
 random.seed(SEED)
-
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+torch.set_float32_matmul_precision('high')
 
 def model_evaluation(model, val_loader):
     model.eval()
@@ -81,7 +83,7 @@ def model_training(model, train_loader, val_loader, Tuning=False, verbose=False)
 
     if not Tuning and os.path.exists(mdl_filename):
         os.remove(mdl_filename)
-        # print('deleted existing model')
+        print('deleted existing model')
     # else:
         # print('No saved model')
 
